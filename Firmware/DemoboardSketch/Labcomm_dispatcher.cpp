@@ -102,6 +102,7 @@ void Labcomm_dispatcher_init(void)
 RESPONSE_ACTION dispatch_Labcomm_packet(uint16_t module_id, uint8_t* command_data_ptr, uint16_t command_data_size, uint8_t* response_data_ptr, uint16_t* response_data_size)
 {
   int16_t index = get_module_function_table_index(module_id);
+  SerialUSB.print("index = ");SerialUSB.println(index);
   RESPONSE_ACTION retval = NO_RESPONSE;  // Default no response unless handler function requests it.
 
   // Look up handler function for module_id and call it if it exists.

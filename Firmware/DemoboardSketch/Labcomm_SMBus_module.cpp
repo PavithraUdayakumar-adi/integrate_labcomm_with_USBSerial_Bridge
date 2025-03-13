@@ -50,6 +50,14 @@
 #include "Comm_SMBus.h"
 #include "LT_I2C_Wire.h"
 
+#define ID_I2C_FREQUENCY 			0x20
+#define ID_I2C_READ					0x21
+#define ID_I2C_WRITE 				0x22
+#define ID_I2C_REPEATED_WRITE		0x23
+#define ID_I2C_START 				0x24
+#define ID_I2C_STOP					0x25
+#define ID_I2C_WRITEBYTE 			0x26
+#define ID_I2C_READBYTE				0x27
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 // Definitions
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -222,6 +230,12 @@ typedef union
   } read_word_list_pec_v2; // READ WORD_LIST_PEC command (Current version with transaction tag).
 } LABCOMM_SMBUS_COMMAND_TYPE;
 
+// typedef union{
+//   struct __attribute__((packed))
+//   {
+
+//   }
+// }U2SB_I2C_COMMAND_TYPE;
 typedef union
 {
   struct __attribute__((packed))
@@ -450,23 +464,30 @@ RESPONSE_ACTION Labcomm_SMBus_handler(uint8_t* command_buf_ptr, uint16_t command
                                       uint8_t* response_buf_ptr, uint16_t* response_buf_len_ptr)
 {
   digitalWrite(LED_AMBER, HIGH);  // Yellow LED ON to indicate SMBus module active.
-  //SerialUSB.println("Enter SMBus handler");
+  SerialUSB.println("Enter SMBus handler");
 
   RESPONSE_ACTION result = DO_SEND_RESPONSE;
   LABCOMM_SMBUS_STATUS status = LABCOMM_SMBUS_STATUS_NOT_IMPLEMENTED;
   LABCOMM_SMBUS_COMMAND_TYPE *cptr = (LABCOMM_SMBUS_COMMAND_TYPE *)command_buf_ptr;
+  SerialUSB.println(command_buf_len);
+  SerialUSB.println(cptr->common.noun);
+  SerialUSB.println(cptr->common.verb);
 
   // Choose command handler function to call based on noun and verb.
   switch (cptr->common.verb) {
     case LABCOMM_SMBUS_VERB_READ:
       switch (cptr->common.noun) {
         case LABCOMM_SMBUS_NOUN_WORD_LIST_PEC_V2:
+          SerialUSB.println("Debug: Handling READ WORD V2\n");
+
           status = read_word_list_PEC_v2(cptr->read_word_list_pec_v2.addr7,
                                          cptr->read_word_list_pec_v2.bitmap_reg,
                                          cptr->read_word_list_pec_v2.tag,
                                          response_buf_ptr, response_buf_len_ptr);
           break;
         case LABCOMM_SMBUS_NOUN_WORD_LIST_PEC_V1:
+          SerialUSB.println("Debug: Handling READ WORD V1\n");
+
           status = read_word_list_PEC_v1(cptr->read_word_list_pec_v1.addr7,
                                          cptr->read_word_list_pec_v1.bitmap_reg,
                                          response_buf_ptr, response_buf_len_ptr);
@@ -484,6 +505,8 @@ RESPONSE_ACTION Labcomm_SMBus_handler(uint8_t* command_buf_ptr, uint16_t command
                                  response_buf_ptr, response_buf_len_ptr);
           break;
         case LABCOMM_SMBUS_NOUN_WORD_V1:
+          SerialUSB.println("Debug: Handling READ WORD V1\n");
+
           status = read_word_no_PEC(cptr->read_single_v1.addr7, cptr->read_single_v1.cc,
                                     response_buf_ptr, response_buf_len_ptr);
           break;
@@ -575,6 +598,7 @@ RESPONSE_ACTION Labcomm_SMBus_handler(uint8_t* command_buf_ptr, uint16_t command
       status = LABCOMM_SMBUS_STATUS_NOT_IMPLEMENTED;
   }
   // TODO: Report the status code to the yet-to-be-written error module.
+  SerialUSB.print("status = ");SerialUSB.println(status);
   switch (status) {
     case LABCOMM_SMBUS_STATUS_OK:
       result = DO_SEND_RESPONSE;
@@ -582,7 +606,7 @@ RESPONSE_ACTION Labcomm_SMBus_handler(uint8_t* command_buf_ptr, uint16_t command
     default:  // case any error occurs
       result = NO_RESPONSE;
   }
-  //SerialUSB.println("Exit SMBus handler");
+  SerialUSB.println("Exit SMBus handler");
   digitalWrite(LED_AMBER, LOW);  // LED off on returning from SMBus module.
   return result;
 }
@@ -874,7 +898,7 @@ static LABCOMM_SMBUS_STATUS read_word_no_PEC_v2(uint8_t addr7, uint8_t cc, uint3
   rptr->read_word_v2.verb = LABCOMM_SMBUS_VERB_READ;
   rptr->read_word_v2.addr7 = addr7;
   rptr->read_word_v2.cc = cc;
-  rptr->read_word_v2.tag = tag;
+  rptr->read_word_v2.tag = 00000000000.;
   int err = i2c_read_block_data(addr7, cc, sizeof(rptr->read_word_v2.data16), (uint8_t *)&rptr->read_word_v2.data16);
   rptr->read_byte_v2.timestamp = Labcomm_Swap_Byte_Order_32(micros());
   rptr->read_word_v2.data16 = Labcomm_Swap_Byte_Order_16(rptr->read_word_v2.data16);  // Convert from native (little-endian) to network byte order.
@@ -884,14 +908,21 @@ static LABCOMM_SMBUS_STATUS read_word_no_PEC_v2(uint8_t addr7, uint8_t cc, uint3
 
 static LABCOMM_SMBUS_STATUS read_word_no_PEC(uint8_t addr7, uint8_t cc, uint8_t *response_buf_ptr, uint16_t *response_buf_len_ptr)
 {
-  LABCOMM_SMBUS_RESPONSE_TYPE *rptr = (LABCOMM_SMBUS_RESPONSE_TYPE *)response_buf_ptr;
-  *response_buf_len_ptr = (uint16_t)sizeof(rptr->read_word_v1);
-  rptr->read_word_v1.noun = LABCOMM_SMBUS_NOUN_WORD_V1;
-  rptr->read_word_v1.verb = LABCOMM_SMBUS_VERB_READ;
-  rptr->read_word_v1.addr7 = addr7;
-  rptr->read_word_v1.cc = cc;
+    LABCOMM_SMBUS_RESPONSE_TYPE *rptr = (LABCOMM_SMBUS_RESPONSE_TYPE *)response_buf_ptr;
+    *response_buf_len_ptr = (uint16_t)sizeof(rptr->read_word_v1);
+    rptr->read_word_v1.noun = LABCOMM_SMBUS_NOUN_WORD_V1;
+    rptr->read_word_v1.verb = LABCOMM_SMBUS_VERB_READ;
+    rptr->read_word_v1.addr7 = addr7;
+    rptr->read_word_v1.cc = cc;
   int err = i2c_read_block_data(addr7, cc, sizeof(rptr->read_word_v1.data16), (uint8_t *)&rptr->read_word_v1.data16);
+  if (err != 0)
+    {
+        SerialUSB.print("I2C Read Error: ");
+        SerialUSB.println(err);
+        return LABCOMM_SMBUS_STATUS_I2C_ERR;
+    }
   rptr->read_word_v1.data16 = Labcomm_Swap_Byte_Order_16(rptr->read_word_v1.data16);  // Convert from native (little-endian) to network byte order.
+
   return (err == 0) ? LABCOMM_SMBUS_STATUS_OK : LABCOMM_SMBUS_STATUS_I2C_ERR;
 }
 

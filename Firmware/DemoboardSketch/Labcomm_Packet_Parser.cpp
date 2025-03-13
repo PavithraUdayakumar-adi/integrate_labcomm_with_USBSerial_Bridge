@@ -47,6 +47,7 @@
 #include "demoboard.h"
 #include "Labcomm_Packet_Parser.h"
 #include "Labcomm_dispatcher.h"
+#define U2SB_SERIAL
 
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 // Definitions
@@ -62,6 +63,12 @@ typedef enum {
     COMM_GUI_NUM_STATES,
 } COMM_GUI_STATE_TYPE;
 
+typedef enum {
+    STATE_WAITING,       // Waiting for message_length
+    STATE_RECEIVING_ID,  // Receiving message_id
+    STATE_RECEIVING_MESSAGE // Receiving message content
+} CommState;
+
 #define COMM_GUI_START_OF_PACKET  (0x4C54)
 
 typedef struct __attribute__((packed))
@@ -72,6 +79,8 @@ typedef struct __attribute__((packed))
     uint16_t num_bytes;  // length(payload + CRC16)
 } COMM_GUI_HEADER_TYPE;
 
+#define RX_MESSAGE_MAXIMUM_LENGTH 512
+
 // CRC applied to both header and data to ensure packet validity
 #define COMM_GUI_CRC_TYPE uint16_t
 #if (COMM_GUI_START_OF_PACKET == 0x4C54)
@@ -81,7 +90,7 @@ typedef struct __attribute__((packed))
 #endif
 
 #define COMM_GUI_SAFETY_TIMEOUT   (1000)
-
+//# define MAX_MSG_SIZE 512
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 // Global Data
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -92,6 +101,7 @@ typedef struct __attribute__((packed))
 
 // Variables for parser state machine.
 static COMM_GUI_STATE_TYPE comm_gui_state;
+static CommState comm_state;
 static COMM_GUI_CRC_TYPE comm_gui_crc;
 
 // Variables to detect if gui comm is interrupted in the middle of a packet so that, so that comms will not be locked up forever.
@@ -127,6 +137,11 @@ const uint16_t PROGMEM crc16_table[] = {
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 void comm_gui_state_machine_reset();
 boolean comm_gui_parse(t_fifo_buffer *buf_in, uint16_t timeout);
+boolean u2sb_comm_gui_parse(t_fifo_buffer *buf_in, uint16_t timeout, CommMessage* message);
+boolean u2sb_send_packet(t_fifo_buffer *buf_out, char status, char message_id);
+
+//boolean comm_gui_CommMessage_parse(t_fifo_buffer *buf_in, uint16_t timeout);
+
 uint16_t comm_gui_crc16_update(uint16_t crc, uint8_t data);
 
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -218,8 +233,34 @@ boolean Labcomm_Handle_Comms(t_fifo_buffer *buf_in, t_fifo_buffer *buf_out)
   digitalWrite(DEBUG5, HIGH);
 
   // Check for a packet from the input buffer and attempt to process it if found.
-  if(true == comm_gui_parse(buf_in, COMM_GUI_SAFETY_TIMEOUT))
+  t_fifo_buffer message_buf;
+
+  #ifdef U2SB_SERIAL
+  CommMessage* message= new CommMessage();
+  u2sb_comm_gui_parse(buf_in, COMM_GUI_SAFETY_TIMEOUT, message);
+  
+  uint8_t message_buffer[1024];  
+  message_buf.buf_ptr = message_buffer;  
+  message_buf.buf_size = sizeof(message_buffer);  
+  message_buf.rd = 0;
+  message_buf.wr = 0;
+
+  uint16_t res = fifoBuf_putData(&message_buf, message->message, message->message_length);
+  SerialUSB.print("Buffer Size: ");
+  SerialUSB.println(message_buf.buf_size);
+  SerialUSB.print("Buffer Read Pointer: ");
+  SerialUSB.println(message_buf.rd);
+  SerialUSB.print("Buffer Write Pointer: ");
+  SerialUSB.println(message_buf.wr);
+  #endif
+  #ifdef LABCOMM
+  message_buf=*buf_in;
+  #endif
+
+  if(true == comm_gui_parse(&message_buf, COMM_GUI_SAFETY_TIMEOUT))
   {
+    SerialUSB.println("parse sucess ........");
+
     uint16_t module_id = comm_gui_header.dest_id;
 
     uint8_t response_buffer[TRANSMIT_BFR_LEN];
@@ -234,21 +275,44 @@ boolean Labcomm_Handle_Comms(t_fifo_buffer *buf_in, t_fifo_buffer *buf_out)
       {
         // Can not reset or else we'll return true below.  That'll cause the next byte to get thrown away if there's a partial second packet in the serial buffer.
         // todo - might be better to make this state machine run again instead, to start the processing of the next packet instead.
+        u2sb_send_packet(buf_out, U2SB_OK, message->message_id);
         comm_gui_state = COMM_GUI_STATE_RESPONSE_SENDING;
       }
       else
       {
+        u2sb_send_packet(buf_out, U2SB_ERROR, message->message_id);
+
         comm_gui_state_machine_reset(); // sending packet has error
       }
     }
     else
     {
       // Silently drop the packet and don't send any response.
+      u2sb_send_packet(buf_out, U2SB_ERROR, message->message_id);
       comm_gui_state_machine_reset(); // function to process this data has error
     }
   }
+  //SerialUSB.print("COMM PARSE FAILED");
+  //u2sb_send_response(buf_out);// length+2, status, message_id, data
   // Return true if still receiving packet from the input buffer.
   return (comm_gui_state != COMM_GUI_STATE_WAITING);
+}
+
+bool u2sb_send_packet(t_fifo_buffer *buf_out, char status, char message_id){
+  uint8_t length1= -buf_out->rd + buf_out->wr +2;
+  //SerialUSB.print("buf_out->rd - buf_out->wr = ");SerialUSB.println(length1 + 2, HEX);
+  
+  fifoBuf_prependData(buf_out, &message_id, 1);
+  fifoBuf_prependData(buf_out, &status, 1);
+  fifoBuf_prependData(buf_out, &length1, 1);
+
+
+  // if (data != nullptr) {
+  //       for (int i = 0; i < data_length; i++) {
+  //           fifoBuf_putData(buf_out, &data[i], 1);
+  //       }
+  //   }
+  return true;
 }
 
 // Ensure 16bit values are transmitted in Network Byte Order
@@ -278,12 +342,16 @@ uint32_t Labcomm_Swap_Byte_Order_32(uint32_t data)
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 void comm_gui_state_machine_reset()
 {
+    SerialUSB.println("COMM GUI STATE MACHINE RESET");
     comm_gui_header.start_of_packet = COMM_GUI_START_OF_PACKET;
     comm_gui_bytes_peeked = 0;
     comm_gui_crc = 0;
 
     comm_gui_state = COMM_GUI_STATE_WAITING;
     comm_gui_state_last = COMM_GUI_STATE_WAITING;
+
+    comm_state = STATE_WAITING;
+
 }
 
 // Get characters from serial port and determine if they are part of a GUI Comm packet.
@@ -292,6 +360,97 @@ void comm_gui_state_machine_reset()
 // If a packet is detected, however, and fails a validity check it is acceptable for all of the bytes in the bad packet to be eaten.
 // If all of the bytes in a command are available from the serial port, this function should run to completion.  It should not require
 // being called multiple times.  The most elegant way to handle this is with gotos so be prepared to see some.
+
+static uint8_t message_length = 0;
+static uint8_t message_id = 0;
+static uint8_t message_buffer[RX_MESSAGE_MAXIMUM_LENGTH]; 
+
+boolean u2sb_comm_gui_parse(t_fifo_buffer *buf_in, uint16_t timeout, CommMessage* message) {
+    digitalWrite(DEBUG8, HIGH);
+    comm_state = STATE_WAITING;
+    uint8_t bytes_received = 0;
+
+    while (fifoBuf_getUsed(buf_in) > 0) {
+        switch (comm_state) {
+            case STATE_WAITING:
+                // Read message length (First Byte)
+                message_length = fifoBuf_getByte(buf_in);  // Move rd pointer correctly
+                SerialUSB.println();
+                SerialUSB.print("Message length = "); SerialUSB.print(message_length, HEX);
+                if (message_length == 0 || message_length > RX_MESSAGE_MAXIMUM_LENGTH) {
+                    SerialUSB.println("Error: Invalid message length.");
+                    comm_state = STATE_WAITING;
+                    break;
+                }
+                if (message_length > 0) {
+                    comm_state = STATE_RECEIVING_ID;
+                }
+                break;
+
+            case STATE_RECEIVING_ID:
+                // Read message ID (Second Byte)
+                if (fifoBuf_getUsed(buf_in) > 0) {
+                    message_id = fifoBuf_getByte(buf_in);
+                    SerialUSB.println();
+                    SerialUSB.print("Message id = "); SerialUSB.print(message_id, HEX);
+                    if(message_id!=0x4E){
+                      SerialUSB.println("Invalid ID");
+                      comm_state= STATE_WAITING;
+                      break;
+                    }
+                    comm_state = STATE_RECEIVING_MESSAGE;
+                    bytes_received = 0;  // Reset counter for message reception
+                }
+                break;
+
+            case STATE_RECEIVING_MESSAGE:
+                // Read the message bytes starting from the third byte
+                while (bytes_received < message_length  && fifoBuf_getUsed(buf_in) > 0) {
+                    message_buffer[bytes_received] = fifoBuf_getByte(buf_in);
+                    bytes_received++;
+                }
+
+                if (bytes_received == message_length) {  // Fully received message
+                    SerialUSB.println();
+                    SerialUSB.println("Message: ");
+                    for (int i = 0; i < bytes_received; i++) {
+                        SerialUSB.print(message_buffer[i], HEX);
+                        SerialUSB.print(" ");
+                    }
+                    SerialUSB.println();
+
+                    //message = new CommMessage();
+                    message->message_length = bytes_received;
+                    message->message_id = message_id;
+                    message->message = (char*)malloc(message->message_length);
+
+                    if (message->message) {
+                        memcpy(message->message, message_buffer, message->message_length);
+                    }
+                    else{
+                      comm_state = STATE_WAITING;
+                    }
+
+                    // Clean up memory
+                    free(message->message);
+                    delete message;
+
+                    // Reset state
+                    comm_state = STATE_WAITING;
+                }
+                break;
+        }
+    }
+
+    digitalWrite(DEBUG8, LOW);
+    return (comm_state != STATE_WAITING);  // True if processing is active
+}
+
+
+// // Check if message_id corresponds to LabComm
+// bool is_labcomm_message(uint8_t message_id) {
+//     return (message_id >= LABCOMM_START_ID && message_id <= LABCOMM_END_ID); // Adjust range as needed
+// }
 boolean comm_gui_parse(t_fifo_buffer *buf_in, uint16_t timeout)
 {
   digitalWrite(DEBUG8, HIGH);
@@ -312,6 +471,7 @@ boolean comm_gui_parse(t_fifo_buffer *buf_in, uint16_t timeout)
   }
 
   // Determine if the serial input is part of a packet used for communication with the GUI.
+  SerialUSB.print("comm_gui_state =");SerialUSB.println(comm_gui_state);
   switch (comm_gui_state)
   {
     case COMM_GUI_STATE_RESPONSE_SENDING: // todo - might not need this state if Comm_Gui_Handle_Comms() is modified such that it processes multiple packets in a row.
@@ -319,8 +479,10 @@ boolean comm_gui_parse(t_fifo_buffer *buf_in, uint16_t timeout)
     case COMM_GUI_STATE_WAITING:
 comm_gui_check_start:
       // Check for start of packet.
+      SerialUSB.print("Start byte");SerialUSB.println(fifoBuf_getBytePeek(buf_in));
       if(fifoBuf_getBytePeek(buf_in) != UPPER_BYTE(comm_gui_header.start_of_packet))
       {
+        SerialUSB.println("Not start packet");
         break; // This isn't the start of a packet.
       }
       comm_gui_state = COMM_GUI_STATE_WAITING_BYTE2;
@@ -336,7 +498,7 @@ comm_gui_check_start:
         comm_gui_state_machine_reset();
         break; // This isn't the start of a packet.  First byte matched, but second byte did not.
       }
-
+      SerialUSB.println("Found Start packet");
       // Start of Packet received.  Read and validate the rest.
       comm_gui_bytes_peeked = sizeof(comm_gui_header.start_of_packet);
       comm_gui_crc = COMM_GUI_CRC_SEED;
@@ -344,21 +506,34 @@ comm_gui_check_start:
       // fallthrough
 
     case COMM_GUI_STATE_COMMAND_RECEIVING_HEADER:
+    SerialUSB.print("fifoBuf_getUsed(buf_in) - comm_gui_bytes_peeked = ");SerialUSB.println(fifoBuf_getUsed(buf_in) - comm_gui_bytes_peeked);
 comm_gui_receive_header:
       while((fifoBuf_getUsed(buf_in) - comm_gui_bytes_peeked) > 0)
       {
         uint8_t* rxbuf_ptr = (uint8_t*)&comm_gui_header;
         uint8_t rxbyte = fifoBuf_getBytePeekAhead(buf_in, comm_gui_bytes_peeked);
+        SerialUSB.println("-----------------------------------");
+        SerialUSB.println(rxbyte, HEX);
         comm_gui_crc = comm_gui_crc16_update(comm_gui_crc, rxbyte);
         rxbuf_ptr[comm_gui_bytes_peeked] = rxbyte;
         comm_gui_bytes_peeked++;
         if(comm_gui_bytes_peeked >= sizeof(comm_gui_header))
         {
           // Reorder the bytes to the native endianness and advance state.
+          SerialUSB.print("Raw num_bytes before swapping = ");
+          SerialUSB.print(((uint8_t*)&comm_gui_header.num_bytes)[0], HEX);
+          SerialUSB.print(" ");
+          SerialUSB.println(((uint8_t*)&comm_gui_header.num_bytes)[1], HEX);
+
           comm_gui_header.src_id = Labcomm_Swap_Byte_Order_16(comm_gui_header.src_id);
           comm_gui_header.dest_id = Labcomm_Swap_Byte_Order_16(comm_gui_header.dest_id);
           comm_gui_header.num_bytes = Labcomm_Swap_Byte_Order_16(comm_gui_header.num_bytes);
 
+          SerialUSB.print("Raw num_bytes after swapping = ");
+          SerialUSB.print(((uint8_t*)&comm_gui_header.num_bytes)[0], HEX);
+          SerialUSB.print(" ");
+          SerialUSB.println(((uint8_t*)&comm_gui_header.num_bytes)[1], HEX);
+          SerialUSB.print("comm_gui_header.num_bytes = "); SerialUSB.println(comm_gui_header.num_bytes);
           // Abort if attempting to receive more bytes than possible
           if(comm_gui_header.num_bytes > sizeof(comm_gui_receive_buffer))
           {
@@ -381,18 +556,26 @@ comm_gui_receive_header:
 
     case COMM_GUI_STATE_COMMAND_RECEIVING_DATA:
 comm_gui_receive_data:
+      SerialUSB.println("Receving data");
       while((fifoBuf_getUsed(buf_in) - comm_gui_bytes_peeked) > 0)
       {
         uint8_t rxbyte = fifoBuf_getBytePeekAhead(buf_in, comm_gui_bytes_peeked);
+        SerialUSB.println("-----------------------------------");
+        SerialUSB.println(rxbyte, HEX);
         comm_gui_crc = comm_gui_crc16_update(comm_gui_crc, rxbyte);
         comm_gui_receive_buffer[comm_gui_bytes_peeked - sizeof(comm_gui_header)] = rxbyte;
         comm_gui_bytes_peeked++;
+        //SerialUSB.print("comm_gui_bytes_peeked = ");SerialUSB.println(comm_gui_bytes_peeked);
+        //SerialUSB.print("comm_gui_header.num_bytes + sizeof(comm_gui_header) = ");SerialUSB.println(comm_gui_header.num_bytes + sizeof(comm_gui_header));
+        //SerialUSB.print("sizeof(comm_gui_header) = ");SerialUSB.println(sizeof(comm_gui_header));
         if(comm_gui_bytes_peeked >= (comm_gui_header.num_bytes + sizeof(comm_gui_header)))
         {
+          SerialUSB.println("COMM GUI verfiying .......");
           comm_gui_state = COMM_GUI_STATE_COMMAND_VERIFYING;
           goto comm_gui_verifying;
         }
       }
+      //comm_gui_state_machine_reset();
       break;
 
     case COMM_GUI_STATE_COMMAND_VERIFYING:
@@ -400,6 +583,8 @@ comm_gui_verifying:
       if ((fifoBuf_getUsed(buf_in) - comm_gui_bytes_peeked) < sizeof(comm_gui_crc)) {
         break;
       }
+      SerialUSB.print("crc upper byte : ");SerialUSB.println(UPPER_BYTE(comm_gui_crc), HEX);
+      SerialUSB.print("crc lower byte : ");SerialUSB.println(LOWER_BYTE(comm_gui_crc), HEX);
 
       if((fifoBuf_getBytePeekAhead(buf_in, comm_gui_bytes_peeked) != UPPER_BYTE(comm_gui_crc)) ||
           (fifoBuf_getBytePeekAhead(buf_in, comm_gui_bytes_peeked+1) != LOWER_BYTE(comm_gui_crc)))
@@ -424,8 +609,231 @@ comm_gui_processing:
   digitalWrite(DEBUG8, LOW);
 
   // Return true if we are actively processing a packet.
+  SerialUSB.print("COMM GUI STATE = "); SerialUSB.println(comm_gui_state);
   return (comm_gui_state == COMM_GUI_STATE_COMMAND_PROCESSING);
 }
+
+// // Get characters from serial port and determine if they are part of a GUI Comm packet.
+// // Return true if data was received from a valid packet.
+// // The goal is to leave serial input untouched if not receiving a packet so that another comm interface can also exist.
+// // If a packet is detected, however, and fails a validity check it is acceptable for all of the bytes in the bad packet to be eaten.
+// // If all of the bytes in a command are available from the serial port, this function should run to completion.  It should not require
+// // being called multiple times.  The most elegant way to handle this is with gotos so be prepared to see some.
+// boolean comm_gui_CommMessage_parse(t_fifo_buffer *buf_in, uint16_t timeout)
+// {
+//   digitalWrite(DEBUG8, HIGH);
+
+//   // Check to ensure we don't lock up in one state forever if for some reason Comm is interrupted in the middle of a packet.
+//   {
+//       uint32_t new_time = millis();
+//       if((comm_gui_state != comm_gui_state_last) || (comm_gui_state == COMM_GUI_STATE_WAITING))
+//       {
+//           comm_gui_state_last = comm_gui_state;
+//           comm_gui_safety_timer = new_time;
+//       }
+//       else if((new_time - comm_gui_safety_timer) >= timeout)
+//       {
+//         comm_gui_state_machine_reset();
+//         comm_gui_safety_timer = new_time;
+//       }
+//   }
+
+//   // Determine if the serial input is part of a packet used for communication with the GUI.
+//   switch (comm_gui_state)
+//   {
+//     case COMM_GUI_STATE_RESPONSE_SENDING: // todo - might not need this state if Comm_Gui_Handle_Comms() is modified such that it processes multiple packets in a row.
+//       comm_gui_state_machine_reset();
+//     case COMM_GUI_STATE_WAITING:
+//     if (fifoBuf_getUsed(buf_in) < 1) {
+//         break; 
+//     }
+    
+//     uint8_t message_length = fifoBuf_getBytePeek(buf_in);
+    
+//     if (message_length == 0 || message_length > MAX_MSG_SIZE) {
+//         comm_gui_state_machine_reset(); 
+//         break;
+//     }
+
+//     comm_message.message_length = message_length;
+//     comm_message.message = (uint8_t*) malloc(message_length * sizeof(uint8_t));
+//     if (!comm_message.message) {
+//         comm_gui_state_machine_reset(); 
+//         break;
+//     }
+
+//     comm_gui_state = COMM_GUI_STATE_RECEIVING_DATA;
+
+// case COMM_GUI_STATE_RECEIVING_DATA:
+//     if (fifoBuf_getUsed(buf_in) < comm_message.message_length) {
+//         break; 
+//     }
+
+//     fifoBuf_getData(buf_in, comm_message.message, comm_message.message_length);
+//     fifoBuf_removeData(buf_in, comm_message.message_length); // Remove data from the buffer
+
+//     comm_gui_state = COMM_GUI_STATE_COMMAND_VERIFYING;
+//     // Fallthrough
+
+// case COMM_GUI_STATE_COMMAND_VERIFYING:
+//     if (!validate_crc(comm_message.message, comm_message.message_length)) {
+//         comm_gui_state_machine_reset(); // Reset if CRC is invalid
+//         break;
+//     }
+
+//     //labcomm_header_message.length = comm_message.message_length;
+//     //memcpy(labcomm_header_message.data, comm_message.message, comm_message.message_length);
+
+//     rx_message_queue.try_put(&comm_message);
+
+//     comm_gui_state = COMM_GUI_STATE_WAITING;
+//     break;
+//     }
+
+//   digitalWrite(DEBUG8, LOW);
+
+//   // Return true if we are actively processing a packet.
+//   return (comm_gui_state == COMM_GUI_STATE_COMMAND_PROCESSING);
+// }
+
+// case COMM_GUI_STATE_WAITING:
+//     if (fifoBuf_getUsed(buf_in) < 1) {
+//         break; 
+//     }
+    
+//     uint8_t message_length = fifoBuf_getBytePeek(buf_in);
+    
+//     if (message_length == 0 || message_length > MAX_MSG_SIZE) {
+//         comm_gui_state_machine_reset(); 
+//         break;
+//     }
+
+//     comm_message.message_length = message_length;
+//     comm_message.message = (uint8_t*) malloc(message_length * sizeof(uint8_t));
+//     if (!comm_message.message) {
+//         comm_gui_state_machine_reset(); 
+//         break;
+//     }
+
+//     comm_gui_state = COMM_GUI_STATE_RECEIVING_DATA;
+//     // Fallthrough
+
+// case COMM_GUI_STATE_RECEIVING_DATA:
+//     if (fifoBuf_getUsed(buf_in) < comm_message.message_length) {
+//         break;
+//     }
+
+//     // Read data into the message buffer
+//     fifoBuf_getData(buf_in, comm_message.message, comm_message.message_length);
+//     fifoBuf_removeData(buf_in, comm_message.message_length); // Remove data from the buffer
+
+//     comm_gui_state = COMM_GUI_STATE_COMMAND_VERIFYING;
+//     // Fallthrough
+
+// case COMM_GUI_STATE_COMMAND_VERIFYING:
+//     if (!validate_crc(comm_message.message, comm_message.message_length)) {
+//         comm_gui_state_machine_reset(); // Reset if CRC is invalid
+//         break;
+//     }
+
+//     // Successfully received and verified message, process it
+//     // Convert CommMessage into labcomm_header_message format
+//     labcomm_header_message.length = comm_message.message_length;
+//     memcpy(labcomm_header_message.data, comm_message.message, comm_message.message_length);
+
+//     // Push the message to the rx_message_queue
+//     rx_message_queue.try_put(&comm_message);
+
+//     // Reset state machine and prepare for the next packet
+//     comm_gui_state = COMM_GUI_STATE_WAITING;
+//     break;
+
+// boolean comm_gui_CommMessage_parse(t_fifo_buffer *buf_in, uint16_t timeout)
+// {
+//   static int rx_buffer_index = 0;
+//   static int rx_message_index = 0;
+//   static constexpr int RX_MESSAGE_BUFFER_SIZE = 32;
+//   static constexpr int RX_MESSAGE_MAXIMUM_LENGTH = 512;
+//   static constexpr int buffer_limit = 125;
+
+//   static CommMessage comm_message;
+//   //static Queue<CommMessage*, RX_MESSAGE_BUFFER_SIZE> rx_message_queue;
+//   static int rx_message_start_index = 0;
+//   //static Timeout *timeout_timer = new Timeout();
+
+//   uint32_t new_time = millis();
+//   if((comm_gui_state != comm_gui_state_last) || (comm_gui_state == COMM_GUI_STATE_WAITING))
+//   {
+//       comm_gui_state_last = comm_gui_state;
+//       comm_gui_safety_timer = new_time;
+//   }
+//   else if((new_time - comm_gui_safety_timer) >= timeout)
+//   {
+//     comm_gui_state_machine_reset();
+//     comm_gui_safety_timer = new_time;
+//   }
+
+//   switch (comm_gui_state)
+//   {
+//     case COMM_GUI_STATE_WAITING:
+//       if (fifoBuf_getUsed(buf_in) < 1) break;
+
+//       uint8_t rx = fifoBuf_getByte(buf_in);
+//       Serial.print("Received byte: ");
+//       Serial.println(rx, HEX);
+
+//       if (rx_buffer_index > RX_MESSAGE_MAXIMUM_LENGTH)
+//       {
+//         Serial.println("Buffer overflow, resetting index");
+//         rx_buffer_index = 0;
+//         break;
+//       }
+
+//       comm_message.message[rx_buffer_index] = rx;
+//       Serial.print("Storing byte at index: ");
+//       Serial.println(rx_buffer_index);
+
+//       if (rx_buffer_index > buffer_limit)
+//       {
+//         int a = rx_buffer_index;
+//         Serial.print("Buffer limit exceeded: ");
+//         Serial.println(a);
+//       }
+
+//       if (comm_message.message[0] == rx_buffer_index)
+//       {
+//         Serial.println("Full message received, processing");
+//         CommMessage *newMessage = new CommMessage();
+//         newMessage->message = comm_message.message;
+//         newMessage->message_length = rx_buffer_index;
+//         newMessage->mode = COMM_MODE_BINARY;
+
+//         //rx_message_queue.try_put(newMessage);
+//         rx_message_start_index = rx_buffer_index + 1;
+        
+//         rx_message_index++;
+//         if (rx_message_index >= RX_MESSAGE_BUFFER_SIZE)
+//         {
+//           rx_message_index = 0;
+//         }
+
+//         Serial.println("Message added to queue, resetting buffer index");
+//         rx_buffer_index = 0;
+//         //timeout_timer->detach();
+//       }
+//       else
+//       {
+//         rx_buffer_index++;
+//         Serial.print("Incrementing buffer index: ");
+//         Serial.println(rx_buffer_index);
+//       }
+//       break;
+//   }
+
+//   digitalWrite(DEBUG8, LOW);
+//   Serial.println("Exiting comm_gui_CommMessage_parse");
+//   return (comm_gui_state == COMM_GUI_STATE_COMMAND_PROCESSING);
+// }
 
 uint16_t comm_gui_crc16_update(uint16_t crc, uint8_t data)
 {

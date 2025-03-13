@@ -58,6 +58,7 @@ uint16_t fifoBuf_getData(t_fifo_buffer *buf, void *data, uint16_t len);
 uint16_t fifoBuf_putByte(t_fifo_buffer *buf, const uint8_t b);
 
 uint16_t fifoBuf_putData(t_fifo_buffer *buf, const void *data, uint16_t len);
+uint16_t fifoBuf_prependData(t_fifo_buffer *buf, const void *data, uint16_t len);
 
 void fifoBuf_init(t_fifo_buffer *buf, const void *buffer, const uint16_t buffer_size);
 

@@ -109,8 +109,10 @@ int Comm_Smbus_Reg16_Read_PEC(uint8_t addr7,                            //!< IC'
   UNUSED(port_configuration);
   uint8_t value[3];
   byte i2c_fail;
-  
+
   digitalWrite(LED_AMBER, HIGH);
+  SerialUSB.println("LED OFF");
+
   i2c_enable(COMM_SMBUS_BAUD);
   i2c_fail = i2c_read_block_data(addr7, command_code, sizeof(value), value);
   if(i2c_fail == 0)
@@ -129,6 +131,7 @@ int Comm_Smbus_Reg16_Read_PEC(uint8_t addr7,                            //!< IC'
     }
   }
   digitalWrite(LED_AMBER, LOW);
+  SerialUSB.println("LED ON");
   return i2c_fail;
 }
 

@@ -86,7 +86,7 @@ static uint8_t transmit_fifo_buffer[TRANSMIT_BFR_LEN];
 static void demoboard_flash_status_led(void);
 static void demoboard_handle_comms(void);
 static void amber_led_indicates_smbalert(void);
-
+void debugFifoContents();
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 // Global Functions
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
@@ -121,17 +121,44 @@ void loop()
 
   // Handle serial communication. All Labcomm packet processing and dispatch is here.
   demoboard_handle_comms();
-
+  //debugFifoContents();
   return;
 }
 
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 // Local Functions
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+void debugFifoContents() {
+    SerialUSB.println("---- Debug FIFO Contents ----");
+
+    // Debug receive_fifo
+    SerialUSB.print("Receive FIFO: ");
+    uint16_t receive_fifo_used = (receive_fifo.wr + receive_fifo.buf_size - receive_fifo.rd) % receive_fifo.buf_size;
+    for (uint16_t i = 0; i < receive_fifo_used; i++) {
+        uint8_t data = receive_fifo.buf_ptr[(receive_fifo.rd + i) % receive_fifo.buf_size];
+        SerialUSB.print(data, HEX); // Print data in HEX
+        SerialUSB.print(" ");
+    }
+    SerialUSB.println();
+
+    // Debug transmit_fifo
+    SerialUSB.print("Transmit FIFO: ");
+    uint16_t transmit_fifo_used = (transmit_fifo.wr + transmit_fifo.buf_size - transmit_fifo.rd) % transmit_fifo.buf_size;
+    for (uint16_t i = 0; i < transmit_fifo_used; i++) {
+        uint8_t data = transmit_fifo.buf_ptr[(transmit_fifo.rd + i) % transmit_fifo.buf_size];
+        SerialUSB.print(data, HEX); // Print data in HEX
+        SerialUSB.print(" ");
+    }
+    SerialUSB.println();
+
+    SerialUSB.println("------------------------------");
+}
+
 
 static void amber_led_indicates_smbalert(void)
 {
   // Light the AMBER LED if and only if SMBALERT# is asserted.
+  SerialUSB.println("SMBUS ALERT------------AMBER LED is ON");
   const unsigned int AMBER_LED_PIN_NUMBER = 43;
   static int led_state = -1;
   int next_led_state;
@@ -172,14 +199,25 @@ static void demoboard_flash_status_led(void)
 
   return;
 }
+// static constexpr int RX_MESSAGE_BUFFER_SIZE = 32;
+// char *rx_buffer[RX_MESSAGE_BUFFER_SIZE];
+// static constexpr int RX_MESSAGE_MAXIMUM_LENGTH = 512;
+// 	int rx_buffer_index =0;
+// 	unsigned int rx_message_index=0;
+// 	int rx_message_start_index=0;
 
 static void demoboard_handle_comms(void)
 {
-
- SerialUSB.println("-----------------------------------------------Start -------------------------------------------------");
+  // while (SerialUSB.available() > 0 && fifoBuf_getFree(&receive_fifo) > 0) {
+  //   // todo - old comment
+  //   // yes this is slow, but the arduino cant do anything faster anyway
+  //   // for better hw it would be better to copy a group at once...
+  //   fifoBuf_putByte(&receive_fifo, SerialUSB.read());
+  // }
+  SerialUSB.println("-----------------------------------------------Start -------------------------------------------------");
                                 //len=14                                                                      //dev_addr
   //uint8_t simulated_data[] = {0x0E, 0x4E, 0x4C, 0x54, 0x00, 0x00, 0x00, 0x20, 0x00, 0x04, 0x01, 0x00, 0x18, 0x3B, 0x31, 0xFB};
-  uint8_t simulated_data[] = {0x4C, 0x54, 0x00, 0x00, 0x00, 0x20, 0x00, 0x06, 0x01, 0x01, 0x18, 0x0D, 0x00, 0x07, 0x28, 0x3D};
+  uint8_t simulated_data[] = {0x10, 0x4E, 0x4C, 0x54, 0x00, 0x00, 0x00, 0x20, 0x00, 0x06, 0x01, 0x01, 0x18, 0x0D, 0x00, 0x07, 0x28, 0x3D};
   //uint8_t simulated_data[] = {0x0E, 0x4E, 0x4C, 0x54, 0x00, 0x00, 0x00, 0x20, 0x00, 0x04, 0x01, 0x00, 0x18, 0x01, 0x22, 0x7B};
   uint8_t frame_size = sizeof(simulated_data);
 
@@ -188,12 +226,37 @@ static void demoboard_handle_comms(void)
         fifoBuf_putByte(&receive_fifo, simulated_data[i]);
       }
     }
+    // //Populate CommMessage
+    // if (fifoBuf_getUsed(&receive_fifo) > 0) {
+    //   uint8_t message_length = fifoBuf_getByte(&receive_fifo);  
+    //   SerialUSB.println("mess length=");SerialUSB.print(message_length,HEX);
+        
+    //   if (fifoBuf_getUsed(&receive_fifo) >= message_length) {  
+    //         uint8_t message[message_length];
+    //         fifoBuf_getData(&receive_fifo, message, message_length);
+            
+    //          CommMessage *newMessage = new CommMessage();
+    //         // newMessage->message = (char*)malloc(message_length);
+    //         // memcpy(newMessage->message, message, message_length);
+    //         // newMessage->message_length = message_length;
+    //         // newMessage->mode = COMM_MODE_BINARY;
+    //         // SerialUSB.print("New Message: ");
+    //         for (int i = 0; i < message_length; i++) {
+    //           SerialUSB.print(message[i], HEX);
+    //         }
+    //         SerialUSB.println();
+    //     }
+    // }
   // Process received bytes
+  //SerialUSB.print("---- fifo Used ----");
+  SerialUSB.println("Length of receive buffer: ");SerialUSB.print(fifoBuf_getUsed(&receive_fifo), HEX);
   if(fifoBuf_getUsed(&receive_fifo) > 0)
   {
     if(Labcomm_Handle_Comms(&receive_fifo, &transmit_fifo) == true)
     {
       // Received input was used by the GUI
+      SerialUSB.println("Received used by GUI");
+      //SerialUSB.println(transmit_fifo.buf_size);
     }
     else
     {
@@ -213,12 +276,13 @@ static void demoboard_handle_comms(void)
   // Feed bytes out into Arduino Serial object from the larger ring buffer used by the communication interfaces.
   uint8_t temp_buffer[TRANSMIT_BFR_LEN];
   uint16_t temp_bytes_to_send = MIN(SerialUSB.availableForWrite(), fifoBuf_getUsed(&transmit_fifo));
+  SerialUSB.print("temp_bytes_to_send = ");SerialUSB.println(temp_bytes_to_send);
   if(temp_bytes_to_send != 0)
   {
     fifoBuf_getData(&transmit_fifo, temp_buffer, temp_bytes_to_send);
     SerialUSB.write(temp_buffer, temp_bytes_to_send);
   }
-
+  SerialUSB.println("DONE");
   return;
 }
 

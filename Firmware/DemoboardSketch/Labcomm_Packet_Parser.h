@@ -57,6 +57,22 @@ typedef enum {           // A Labcomm module's packet processing function should
   NO_RESPONSE = 1        // --- to request that nothing be done
 } RESPONSE_ACTION;
 
+enum ResponseType {
+		//U2SB_PACKAGE_DISCARDED = -4,
+		//U2SB_UNKNOWN_COMMAND = -3,
+		//U2SB_TIMEOUT = -2,
+		U2SB_ERROR = -1,
+		U2SB_OK = 0
+};
+enum CommunicationMode {COMM_MODE_ASCII, COMM_MODE_BINARY};
+
+typedef struct __attribute__((packed))
+{
+    char *message;
+    int message_length;
+    int message_id;
+} CommMessage;
+
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 // Global Data
 //-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=

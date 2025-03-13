@@ -285,6 +285,36 @@ uint16_t fifoBuf_putData(t_fifo_buffer *buf, const void *data, uint16_t len)
     return i;                   // return number of bytes copied
 }
 
+uint16_t fifoBuf_prependData(t_fifo_buffer *buf, const void *data, uint16_t len)
+{
+    uint16_t rd = buf->rd;   // Read index (head)
+    uint16_t buf_size = buf->buf_size;
+    uint8_t *buff = buf->buf_ptr;
+
+    uint16_t num_bytes = fifoBuf_getFree(buf);
+    if (num_bytes > len)
+        num_bytes = len;
+
+    if (num_bytes < 1)
+        return 0; // No space to insert
+
+    uint8_t *p = (uint8_t *)data;
+    uint16_t i = num_bytes;
+
+    // Move read pointer back to make room at the front
+    while (i > 0)
+    {
+        if (rd == 0)
+            rd = buf_size;
+        rd--; // Move backwards
+        buff[rd] = p[--i];
+    }
+
+    buf->rd = rd; // Update read pointer
+
+    return num_bytes; // Number of bytes copied
+}
+
 void fifoBuf_init(t_fifo_buffer *buf, const void *buffer, const uint16_t buffer_size)
 {
     buf->buf_ptr = (uint8_t *)buffer;

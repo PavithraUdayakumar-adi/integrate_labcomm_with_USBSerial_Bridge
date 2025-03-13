@@ -35,56 +35,32 @@ int8_t i2c_write_block_data(uint8_t address, uint8_t command, uint8_t length, ui
   return retval;
 }
 
-// Read a block of data at the register specified by "command."
+// Read a block of data at register specified by "command."
 int8_t i2c_read_block_data(uint8_t address, uint8_t command, uint8_t length, uint8_t *values)
 {
-    byte retval = 0;
-    
-    SerialUSB.print("I2C Read: Addr=0x");
-    SerialUSB.print(address, HEX);
-    SerialUSB.print(", Cmd=0x");
-    SerialUSB.println(command, HEX);
-    
-    Wire.beginTransmission(address);
-    Wire.write(command);
-    retval = Wire.endTransmission(false);
-    
-    if (retval != 0)  
-    {
-        SerialUSB.print("I2C Write Error: ");
-        SerialUSB.println(retval);
-        return retval;
-    }
+  byte retval = 0;
 
-    return i2c_read_block_data_internal(address, length, values); // Avoid recursion
+  Wire.beginTransmission(address);
+  Wire.write(command);
+  retval = Wire.endTransmission(false);
+  if(0 == retval) retval = i2c_read_block_data(address, length, values);
+  return retval;
 }
 
-// Internal function to read a block of data.
-int8_t i2c_read_block_data_internal(uint8_t address, uint8_t length, uint8_t *values)
+// Read a block of data.
+int8_t i2c_read_block_data(uint8_t address, uint8_t length, uint8_t *values)
 {
-    byte retval = 0;
+  byte retval = 0;
 
-    SerialUSB.print("I2C Read: Addr=0x");
-    SerialUSB.print(address, HEX);
-    SerialUSB.print(", Length=");
-    SerialUSB.println(length);
-
-    Wire.requestFrom(address, length, true);
-    if (Wire.available() < length)
+  Wire.beginTransmission(address);
+  retval = (length != Wire.requestFrom(address, length, true));
+  if(0 == retval)
+  {
+    uint8_t i = 0;
+    while (Wire.available() && (i < length))
     {
-        SerialUSB.println("I2C Read Error: Insufficient Data Received!");
-        return -1; // Indicate error if not enough data received
+      values[i++] = Wire.read();
     }
-
-    for (uint8_t i = 0; i < length; i++)
-    {
-        values[i] = Wire.read();
-        SerialUSB.print("  Data[");
-        SerialUSB.print(i);
-        SerialUSB.print("]: 0x");
-        SerialUSB.println(values[i], HEX);
-    }
-
-    return retval;
+  }
+  return retval;
 }
-
